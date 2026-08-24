@@ -1,0 +1,14 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const certificate_1 = require("../../controllers/admin/certificate");
+const catchAsync_1 = require("../../utils/catchAsync");
+const validation_1 = require("../../middlewares/validation");
+const checkpermission_1 = require("../../middlewares/checkpermission");
+const router = (0, express_1.Router)();
+router.post("/", (0, checkpermission_1.checkOnlyAdmin)(), (0, validation_1.validate)(certificate_1.createCertificateSchema), (0, catchAsync_1.catchAsync)(certificate_1.createCertificate));
+router.get("/", (0, checkpermission_1.checkOnlyAdmin)(), (0, catchAsync_1.catchAsync)(certificate_1.getAllCertificates));
+router.get("/:id", (0, checkpermission_1.checkOnlyAdmin)(), (0, catchAsync_1.catchAsync)(certificate_1.getCertificateById));
+router.put("/:id", (0, checkpermission_1.checkOnlyAdmin)(), (0, validation_1.validate)(certificate_1.updateCertificateSchema), (0, catchAsync_1.catchAsync)(certificate_1.updateCertificate));
+router.delete("/:id", (0, checkpermission_1.checkOnlyAdmin)(), (0, catchAsync_1.catchAsync)(certificate_1.deleteCertificate));
+exports.default = router;

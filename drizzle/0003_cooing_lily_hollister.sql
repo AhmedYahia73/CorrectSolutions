@@ -1,0 +1,2 @@
+ALTER TABLE `visits` ADD `product_id` char(36);--> statement-breakpoint
+ALTER TABLE `visits` ADD CONSTRAINT `visits_product_id_users_id_fk` FOREIGN KEY (`product_id`) REFERENCES `users`(`id`) ON DELETE set null ON UPDATE no action;

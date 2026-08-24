@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1784116003722,
+      "tag": "0000_gigantic_trauma",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1785853415735,
+      "tag": "0001_yellow_fixer",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1785911178759,
+      "tag": "0002_black_lenny_balinger",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1785911629918,
+      "tag": "0003_cooing_lily_hollister",
+      "breakpoints": true
+    }
+  ]
+}
