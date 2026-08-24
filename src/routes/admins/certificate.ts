@@ -23,13 +23,11 @@ router.post(
 
 router.get(
   "/",
-  checkOnlyAdmin(),
   catchAsync(getAllCertificates)
 );
 
 router.get(
   "/:id",
-  checkOnlyAdmin(),
   catchAsync(getCertificateById)
 );
 

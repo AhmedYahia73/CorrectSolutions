@@ -73,7 +73,27 @@ exports.createCertificate = createCertificate;
 // Get All
 const getAllCertificates = async (req, res, next) => {
     try {
-        const records = await db_1.db.select().from(schema_1.certificate).orderBy((0, drizzle_orm_1.desc)(schema_1.certificate.createdAt));
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const search = req.query.search || '';
+        const offset = (page - 1) * limit;
+        let whereConditions = [];
+        if (search) {
+            const searchPattern = `%${search}%`;
+            const { or, like } = require('drizzle-orm');
+            whereConditions.push(or(like(schema_1.certificate.company_name, searchPattern), like(schema_1.certificate.certificate_name, searchPattern)));
+        }
+        let query = db_1.db.select().from(schema_1.certificate).orderBy((0, drizzle_orm_1.desc)(schema_1.certificate.createdAt)).$dynamic();
+        let countQuery = db_1.db.select({ total: require('drizzle-orm').count() }).from(schema_1.certificate).$dynamic();
+        if (whereConditions.length > 0) {
+            const { and } = require('drizzle-orm');
+            query = query.where(and(...whereConditions));
+            countQuery = countQuery.where(and(...whereConditions));
+        }
+        const [records, [{ total: totalCount }]] = await Promise.all([
+            query.limit(limit).offset(offset),
+            countQuery
+        ]);
         const baseUrl = `${req.protocol}://${req.get("host")}/`;
         const result = records.map(record => {
             let parsedImages = [];
@@ -89,7 +109,15 @@ const getAllCertificates = async (req, res, next) => {
                 images_urls: Array.isArray(parsedImages) ? parsedImages.map(img => `${baseUrl}${img}`) : []
             };
         });
-        return (0, response_1.SuccessResponse)(res, result, 200);
+        return (0, response_1.SuccessResponse)(res, {
+            certificates: result,
+            pagination: {
+                total: totalCount,
+                page,
+                limit,
+                totalPages: Math.ceil(totalCount / limit)
+            }
+        }, 200);
     }
     catch (error) {
         next(error);

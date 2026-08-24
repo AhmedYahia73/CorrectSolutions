@@ -79,7 +79,37 @@ export const createCertificate = async (req: Request, res: Response, next: NextF
 // Get All
 export const getAllCertificates = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const records = await db.select().from(certificate).orderBy(desc(certificate.createdAt));
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const search = (req.query.search as string) || '';
+    
+    const offset = (page - 1) * limit;
+
+    let whereConditions: any[] = [];
+    if (search) {
+      const searchPattern = `%${search}%`;
+      const { or, like } = require('drizzle-orm');
+      whereConditions.push(
+        or(
+          like(certificate.company_name, searchPattern),
+          like(certificate.certificate_name, searchPattern)
+        )
+      );
+    }
+
+    let query = db.select().from(certificate).orderBy(desc(certificate.createdAt)).$dynamic();
+    let countQuery = db.select({ total: require('drizzle-orm').count() }).from(certificate).$dynamic();
+
+    if (whereConditions.length > 0) {
+      const { and } = require('drizzle-orm');
+      query = query.where(and(...whereConditions));
+      countQuery = countQuery.where(and(...whereConditions));
+    }
+
+    const [records, [{ total: totalCount }]] = await Promise.all([
+      query.limit(limit).offset(offset),
+      countQuery
+    ]);
     
     const baseUrl = `${req.protocol}://${req.get("host")}/`;
     
@@ -97,7 +127,15 @@ export const getAllCertificates = async (req: Request, res: Response, next: Next
       };
     });
 
-    return SuccessResponse(res, result, 200);
+    return SuccessResponse(res, {
+      certificates: result,
+      pagination: {
+        total: totalCount,
+        page,
+        limit,
+        totalPages: Math.ceil(totalCount / limit)
+      }
+    }, 200);
   } catch (error) {
     next(error);
   }
