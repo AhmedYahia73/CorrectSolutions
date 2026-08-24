@@ -75,11 +75,20 @@ const getAllCertificates = async (req, res, next) => {
     try {
         const records = await db_1.db.select().from(schema_1.certificate).orderBy((0, drizzle_orm_1.desc)(schema_1.certificate.createdAt));
         const baseUrl = `${req.protocol}://${req.get("host")}/`;
-        const result = records.map(record => ({
-            ...record,
-            qr_url: `${baseUrl}${record.qr}`,
-            images_urls: record.images.map(img => `${baseUrl}${img}`)
-        }));
+        const result = records.map(record => {
+            let parsedImages = [];
+            try {
+                parsedImages = typeof record.images === 'string' ? JSON.parse(record.images) : record.images;
+            }
+            catch (e) {
+                parsedImages = [];
+            }
+            return {
+                ...record,
+                qr_url: `${baseUrl}${record.qr}`,
+                images_urls: Array.isArray(parsedImages) ? parsedImages.map(img => `${baseUrl}${img}`) : []
+            };
+        });
         return (0, response_1.SuccessResponse)(res, result, 200);
     }
     catch (error) {
@@ -96,10 +105,17 @@ const getCertificateById = async (req, res, next) => {
             throw new NotFound_1.NotFound("Certificate not found");
         }
         const baseUrl = `${req.protocol}://${req.get("host")}/`;
+        let parsedImages = [];
+        try {
+            parsedImages = typeof record.images === 'string' ? JSON.parse(record.images) : record.images;
+        }
+        catch (e) {
+            parsedImages = [];
+        }
         const result = {
             ...record,
             qr_url: `${baseUrl}${record.qr}`,
-            images_urls: record.images.map(img => `${baseUrl}${img}`)
+            images_urls: Array.isArray(parsedImages) ? parsedImages.map(img => `${baseUrl}${img}`) : []
         };
         return (0, response_1.SuccessResponse)(res, result, 200);
     }
