@@ -83,11 +83,19 @@ export const getAllCertificates = async (req: Request, res: Response, next: Next
     
     const baseUrl = `${req.protocol}://${req.get("host")}/`;
     
-    const result = records.map(record => ({
-      ...record,
-      qr_url: `${baseUrl}${record.qr}`,
-      images_urls: (record.images as string[]).map(img => `${baseUrl}${img}`) 
-    }));
+    const result = records.map(record => {
+      let parsedImages = [];
+      try {
+        parsedImages = typeof record.images === 'string' ? JSON.parse(record.images) : record.images;
+      } catch(e) {
+        parsedImages = [];
+      }
+      return {
+        ...record,
+        qr_url: `${baseUrl}${record.qr}`,
+        images_urls: Array.isArray(parsedImages) ? parsedImages.map(img => `${baseUrl}${img}`) : []
+      };
+    });
 
     return SuccessResponse(res, result, 200);
   } catch (error) {
@@ -106,11 +114,17 @@ export const getCertificateById = async (req: Request, res: Response, next: Next
     }
 
     const baseUrl = `${req.protocol}://${req.get("host")}/`;
-    
+    let parsedImages = [];
+    try {
+      parsedImages = typeof record.images === 'string' ? JSON.parse(record.images) : record.images;
+    } catch(e) {
+      parsedImages = [];
+    }
+
     const result = {
       ...record,
       qr_url: `${baseUrl}${record.qr}`,
-      images_urls: (record.images as string[]).map(img => `${baseUrl}${img}`)
+      images_urls: Array.isArray(parsedImages) ? parsedImages.map(img => `${baseUrl}${img}`) : []
     };
 
     return SuccessResponse(res, result, 200);
