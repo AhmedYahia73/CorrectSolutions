@@ -44,6 +44,25 @@ app.use("/uploads", express_1.default.static(path_1.default.join(__dirname, "../
 app.get("/api/test", (req, res, next) => {
     res.json({ message: "API is working! notify token" });
 });
+app.get("/api/seed", async (req, res) => {
+    try {
+        const bcrypt = require("bcrypt");
+        const { db } = require("./models/db");
+        const { users } = require("./models/schema");
+        const hashedPassword = await bcrypt.hash("123456", 10);
+        await db.insert(users).values({
+            name: "Admin User",
+            email: "admin@correctsolution.com",
+            phone: "01000000000",
+            password: hashedPassword,
+            role: "admin",
+        });
+        res.json({ message: "Admin seeded successfully!" });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message || error });
+    }
+});
 app.use("/api", routes_1.default);
 app.use("/", routes_1.default); // Fallback for direct root access
 app.use((req, res, next) => {

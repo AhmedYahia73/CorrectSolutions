@@ -11,8 +11,8 @@ async function seed() {
         const hashedPassword = await bcrypt_1.default.hash("123456", 10);
         await db_1.db.insert(schema_1.users).values({
             name: "Admin User",
-            email: "admin@correctsolution.com",
-            phone: "01000000000",
+            email: "admin@gmail.com",
+            phone: "123456789",
             password: hashedPassword,
             role: "admin",
         });
