@@ -51,10 +51,22 @@ import { ForbiddenError, UnauthorizedError } from "../Errors";
 //     };
 // };
 
+import { verifyToken } from "../utils/auth";
+
 // ✅ Middleware للتحقق من صلاحيات Admin
 export const checkOnlyAdmin = () => {
     return async (req: Request, res: Response, next: NextFunction) => {
         try {
+            if (!req.user) {
+                const authHeader = req.headers.authorization;
+                if (!authHeader || !authHeader.startsWith("Bearer ")) {
+                    throw new UnauthorizedError("Authentication required (No token provided)");
+                }
+                const token = authHeader.split(" ")[1];
+                const decoded = verifyToken(token);
+                req.user = decoded;
+            }
+
             const user = req.user;
 
             if (!user) {

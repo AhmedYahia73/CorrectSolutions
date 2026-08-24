@@ -45,6 +45,7 @@ app.get("/api/test", (req, res, next) => {
     res.json({ message: "API is working! notify token" });
 });
 app.use("/api", routes_1.default);
+app.use("/", routes_1.default); // Fallback for direct root access
 app.use((req, res, next) => {
     throw new Errors_1.NotFound("Route not found");
 });
