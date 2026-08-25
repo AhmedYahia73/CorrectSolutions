@@ -68,4 +68,10 @@ const route = Router();
 route.post("/login", validate(loginSchema), catchAsync(login));
 route.post("/hash_password", catchAsync(hash_password));
 
+import { getProfile, updateProfile } from "../../controllers/auth/auth";
+import { authenticated } from "../../middlewares/authenticated";
+
+route.get("/profile", authenticated, catchAsync(getProfile));
+route.put("/profile", authenticated, catchAsync(updateProfile));
+
 export default route;

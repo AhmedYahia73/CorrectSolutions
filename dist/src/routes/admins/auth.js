@@ -66,4 +66,8 @@ const route = (0, express_1.Router)();
  */
 route.post("/login", (0, validation_1.validate)(auth_2.loginSchema), (0, catchAsync_1.catchAsync)(auth_1.login));
 route.post("/hash_password", (0, catchAsync_1.catchAsync)(auth_1.hash_password));
+const auth_3 = require("../../controllers/auth/auth");
+const authenticated_1 = require("../../middlewares/authenticated");
+route.get("/profile", authenticated_1.authenticated, (0, catchAsync_1.catchAsync)(auth_3.getProfile));
+route.put("/profile", authenticated_1.authenticated, (0, catchAsync_1.catchAsync)(auth_3.updateProfile));
 exports.default = route;
