@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('fs'); fs.cpSync('src/assets', 'dist/src/assets', {recursive:true}); fs.cpSync('src/vendor', 'dist/src/vendor', {recursive:true});\"",
     "generate-db": "npx drizzle-kit generate",
     "dbcreate": "tsx src/models/setup.ts",
     "migrate-db": "npx drizzle-kit push",

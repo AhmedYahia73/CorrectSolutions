@@ -27,7 +27,7 @@ async function saveBase64Image(req, base64, folder) {
     const buffer = Buffer.from(base64Data, "base64");
     // استخدام UUID لتجنب تكرار الأسماء
     const fileName = `${(0, uuid_1.v4)()}.${ext}`;
-    const uploadsDir = path_1.default.join(__dirname, "../..", "uploads", folder);
+    const uploadsDir = path_1.default.join(process.cwd(), "uploads", folder);
     await promises_1.default.mkdir(uploadsDir, { recursive: true });
     const filePath = path_1.default.join(uploadsDir, fileName);
     await promises_1.default.writeFile(filePath, buffer);

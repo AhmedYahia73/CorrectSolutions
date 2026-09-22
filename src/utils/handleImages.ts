@@ -29,7 +29,7 @@ export async function saveBase64Image(
 
   // استخدام UUID لتجنب تكرار الأسماء
   const fileName = `${uuidv4()}.${ext}`;
-  const uploadsDir = path.join(__dirname, "../..", "uploads", folder);
+  const uploadsDir = path.join(process.cwd(), "uploads", folder);
 
   await fs.mkdir(uploadsDir, { recursive: true });
 

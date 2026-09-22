@@ -9,77 +9,85 @@ const promises_1 = __importDefault(require("fs/promises"));
 const fs_1 = __importDefault(require("fs"));
 const uuid_1 = require("uuid");
 const handleImages_1 = require("./handleImages");
+const LOCAL_WATERMARK_PATHS = [
+    path_1.default.join(__dirname, "../assets/watermark.png"),
+    path_1.default.join(process.cwd(), "dist/src/assets/watermark.png"),
+    path_1.default.join(process.cwd(), "src/assets/watermark.png"),
+    path_1.default.join(process.cwd(), "uploads/1.png"),
+];
 const WATERMARK_URL = "https://certificatebcknd.correctsolution.net/uploads/1.png";
-const LOCAL_WATERMARK_PATH = path_1.default.join(__dirname, "../assets/watermark.png");
-const UPLOADS_WATERMARK_PATH = path_1.default.join(__dirname, "../../uploads/1.png");
+let cachedWatermarkBuffer = null;
 let cachedWatermarkBase64 = null;
-let cachedWatermarkAspect = 927 / 269;
+const WATERMARK_ASPECT = 927 / 269;
 /**
- * Safely load Sharp without crashing the server if sharp is not installed on the host.
+ * Safely load Sharp if installed.
  */
 function getSharp() {
     try {
         return require("sharp");
     }
-    catch (err) {
-        console.warn("Sharp is not installed or failed to load. Falling back to normal image saving.");
+    catch {
         return null;
     }
 }
 /**
- * Retrieves the watermark image base64, cached in memory to avoid repeated I/O or network requests.
+ * Safely load the bundled standalone pure-JS watermark processor.
  */
-async function getWatermarkBase64() {
-    if (cachedWatermarkBase64) {
-        return cachedWatermarkBase64;
-    }
-    // 1. Try reading from uploads/1.png if it exists on server
-    try {
-        if (fs_1.default.existsSync(UPLOADS_WATERMARK_PATH)) {
-            const buf = await promises_1.default.readFile(UPLOADS_WATERMARK_PATH);
-            cachedWatermarkBase64 = buf.toString("base64");
-            return cachedWatermarkBase64;
+function getBundledProcessor() {
+    const tryPaths = [
+        path_1.default.join(__dirname, "../vendor/bundledWatermark.js"),
+        path_1.default.join(process.cwd(), "dist/src/vendor/bundledWatermark.js"),
+        path_1.default.join(process.cwd(), "src/vendor/bundledWatermark.js"),
+    ];
+    for (const p of tryPaths) {
+        try {
+            if (fs_1.default.existsSync(p)) {
+                return require(p);
+            }
         }
+        catch { }
     }
-    catch { }
-    // 2. Try reading from local assets
-    try {
-        if (fs_1.default.existsSync(LOCAL_WATERMARK_PATH)) {
-            const buf = await promises_1.default.readFile(LOCAL_WATERMARK_PATH);
-            cachedWatermarkBase64 = buf.toString("base64");
-            return cachedWatermarkBase64;
+    return null;
+}
+/**
+ * Retrieves the watermark image buffer, cached in memory.
+ */
+async function getWatermarkBuffer() {
+    if (cachedWatermarkBuffer) {
+        return cachedWatermarkBuffer;
+    }
+    // 1. Try reading from known local paths
+    for (const p of LOCAL_WATERMARK_PATHS) {
+        try {
+            if (fs_1.default.existsSync(p)) {
+                const buf = await promises_1.default.readFile(p);
+                cachedWatermarkBuffer = buf;
+                cachedWatermarkBase64 = buf.toString("base64");
+                return cachedWatermarkBuffer;
+            }
         }
+        catch { }
     }
-    catch { }
-    // 3. Fallback: fetch from remote URL
+    // 2. Fallback: fetch from remote URL
     try {
         const res = await fetch(WATERMARK_URL);
         const arrayBuf = await res.arrayBuffer();
         const buf = Buffer.from(arrayBuf);
-        try {
-            await promises_1.default.mkdir(path_1.default.dirname(LOCAL_WATERMARK_PATH), { recursive: true });
-            await promises_1.default.writeFile(LOCAL_WATERMARK_PATH, buf);
-        }
-        catch { }
+        cachedWatermarkBuffer = buf;
         cachedWatermarkBase64 = buf.toString("base64");
-        return cachedWatermarkBase64;
+        return cachedWatermarkBuffer;
     }
-    catch (fetchErr) {
-        console.error("Failed to load watermark:", fetchErr);
+    catch (err) {
+        console.error("Failed to load watermark:", err);
         throw new Error("Unable to load watermark image");
     }
 }
 /**
  * Applies a diagonal watermark (from top-left to bottom-right with 0.4 opacity)
- * onto a base64 image and saves it to disk at maximum speed.
- * If Sharp is not available on the server, safely falls back to saveBase64Image.
+ * onto a base64 image and saves it to disk.
+ * Uses Sharp if available; otherwise uses bundled standalone pure-JS processor.
  */
 async function applyWatermarkAndSave(req, base64, folder) {
-    const sharp = getSharp();
-    if (!sharp) {
-        // Graceful fallback: save without watermark if sharp binary is not available on production
-        return (0, handleImages_1.saveBase64Image)(req, base64, folder);
-    }
     // Fast base64 parsing without regex backtracking
     let mimeType = "image/jpeg";
     let ext = "jpg";
@@ -98,50 +106,71 @@ async function applyWatermarkAndSave(req, base64, folder) {
         }
     }
     const inputBuffer = Buffer.from(base64Data, "base64");
-    const wmBase64 = await getWatermarkBase64();
-    // Load into Sharp and retrieve dimensions
-    const image = sharp(inputBuffer);
-    const metadata = await image.metadata();
-    const width = metadata.width || 1200;
-    const height = metadata.height || 800;
-    // Diagonal length and angle from top-left (0,0) to bottom-right (width, height)
-    const diagonal = Math.hypot(width, height);
-    const angle = (Math.atan2(height, width) * 180) / Math.PI;
-    // Watermark spans ~90% along the diagonal
-    const targetWmWidth = Math.round(diagonal * 0.90);
-    const targetWmHeight = Math.round(targetWmWidth / cachedWatermarkAspect);
-    // SVG overlay rotated along diagonal with opacity 0.4
-    const svgOverlay = Buffer.from(`
-    <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-      <g transform="translate(${width / 2}, ${height / 2}) rotate(${angle})">
-        <image 
-          href="data:image/png;base64,${wmBase64}" 
-          x="${-targetWmWidth / 2}" 
-          y="${-targetWmHeight / 2}" 
-          width="${targetWmWidth}" 
-          height="${targetWmHeight}" 
-          opacity="0.4"
-        />
-      </g>
-    </svg>
-  `);
-    const uploadsDir = path_1.default.join(__dirname, "../..", "uploads", folder);
+    const uploadsDir = path_1.default.join(process.cwd(), "uploads", folder);
     await promises_1.default.mkdir(uploadsDir, { recursive: true });
     const fileName = `${(0, uuid_1.v4)()}.${ext}`;
     const filePath = path_1.default.join(uploadsDir, fileName);
-    // Composite watermark onto image and write directly to file
-    let pipeline = image.composite([{ input: svgOverlay, top: 0, left: 0 }]);
-    if (ext === "png") {
-        pipeline = pipeline.png({ compressionLevel: 6 });
+    const sharp = getSharp();
+    if (sharp) {
+        try {
+            const wmBuffer = await getWatermarkBuffer();
+            const wmBase64 = cachedWatermarkBase64 || wmBuffer.toString("base64");
+            const image = sharp(inputBuffer);
+            const metadata = await image.metadata();
+            const width = metadata.width || 1200;
+            const height = metadata.height || 800;
+            const diagonal = Math.hypot(width, height);
+            const angle = (Math.atan2(height, width) * 180) / Math.PI;
+            const targetWmWidth = Math.round(diagonal * 0.85);
+            const targetWmHeight = Math.round(targetWmWidth / WATERMARK_ASPECT);
+            const svgOverlay = Buffer.from(`
+        <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+          <g transform="translate(${width / 2}, ${height / 2}) rotate(${angle})">
+            <image 
+              href="data:image/png;base64,${wmBase64}" 
+              x="${-targetWmWidth / 2}" 
+              y="${-targetWmHeight / 2}" 
+              width="${targetWmWidth}" 
+              height="${targetWmHeight}" 
+              opacity="0.4"
+            />
+          </g>
+        </svg>
+      `);
+            let pipeline = image.composite([{ input: svgOverlay, top: 0, left: 0 }]);
+            if (ext === "png") {
+                pipeline = pipeline.png({ compressionLevel: 6 });
+            }
+            else if (ext === "webp") {
+                pipeline = pipeline.webp({ quality: 85 });
+            }
+            else {
+                pipeline = pipeline.jpeg({ quality: 85 });
+            }
+            await pipeline.toFile(filePath);
+            const relativePath = `uploads/${folder}/${fileName}`;
+            const imageUrl = `${req.protocol}://${req.get("host")}/${relativePath}`;
+            return { url: imageUrl, relativePath };
+        }
+        catch (sharpErr) {
+            console.warn("Sharp watermarking failed, trying bundled processor:", sharpErr);
+        }
     }
-    else if (ext === "webp") {
-        pipeline = pipeline.webp({ quality: 85 });
+    // Fallback: Bundled pure-JS processor (runs everywhere with ZERO external dependencies)
+    const bundled = getBundledProcessor();
+    if (bundled && bundled.processWatermarkWithJimp) {
+        try {
+            const wmBuffer = await getWatermarkBuffer();
+            const outputBuffer = await bundled.processWatermarkWithJimp(inputBuffer, wmBuffer, mimeType);
+            await promises_1.default.writeFile(filePath, outputBuffer);
+            const relativePath = `uploads/${folder}/${fileName}`;
+            const imageUrl = `${req.protocol}://${req.get("host")}/${relativePath}`;
+            return { url: imageUrl, relativePath };
+        }
+        catch (bundleErr) {
+            console.warn("Bundled watermarking failed, falling back to raw save:", bundleErr);
+        }
     }
-    else {
-        pipeline = pipeline.jpeg({ quality: 85 });
-    }
-    await pipeline.toFile(filePath);
-    const relativePath = `uploads/${folder}/${fileName}`;
-    const imageUrl = `${req.protocol}://${req.get("host")}/${relativePath}`;
-    return { url: imageUrl, relativePath };
+    // Last-resort fallback: Save raw image
+    return (0, handleImages_1.saveBase64Image)(req, base64, folder);
 }
