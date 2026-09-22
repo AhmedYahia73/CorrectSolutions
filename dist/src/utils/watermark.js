@@ -8,11 +8,24 @@ const path_1 = __importDefault(require("path"));
 const promises_1 = __importDefault(require("fs/promises"));
 const fs_1 = __importDefault(require("fs"));
 const uuid_1 = require("uuid");
-const sharp_1 = __importDefault(require("sharp"));
+const handleImages_1 = require("./handleImages");
 const WATERMARK_URL = "https://certificatebcknd.correctsolution.net/uploads/1.png";
 const LOCAL_WATERMARK_PATH = path_1.default.join(__dirname, "../assets/watermark.png");
+const UPLOADS_WATERMARK_PATH = path_1.default.join(__dirname, "../../uploads/1.png");
 let cachedWatermarkBase64 = null;
 let cachedWatermarkAspect = 927 / 269;
+/**
+ * Safely load Sharp without crashing the server if sharp is not installed on the host.
+ */
+function getSharp() {
+    try {
+        return require("sharp");
+    }
+    catch (err) {
+        console.warn("Sharp is not installed or failed to load. Falling back to normal image saving.");
+        return null;
+    }
+}
 /**
  * Retrieves the watermark image base64, cached in memory to avoid repeated I/O or network requests.
  */
@@ -20,22 +33,25 @@ async function getWatermarkBase64() {
     if (cachedWatermarkBase64) {
         return cachedWatermarkBase64;
     }
-    // 1. Try reading from local assets
+    // 1. Try reading from uploads/1.png if it exists on server
     try {
-        if (fs_1.default.existsSync(LOCAL_WATERMARK_PATH)) {
-            const buf = await promises_1.default.readFile(LOCAL_WATERMARK_PATH);
-            const meta = await (0, sharp_1.default)(buf).metadata();
-            if (meta.width && meta.height) {
-                cachedWatermarkAspect = meta.width / meta.height;
-            }
+        if (fs_1.default.existsSync(UPLOADS_WATERMARK_PATH)) {
+            const buf = await promises_1.default.readFile(UPLOADS_WATERMARK_PATH);
             cachedWatermarkBase64 = buf.toString("base64");
             return cachedWatermarkBase64;
         }
     }
-    catch (err) {
-        console.warn("Could not read local watermark asset, falling back to network fetch:", err);
+    catch { }
+    // 2. Try reading from local assets
+    try {
+        if (fs_1.default.existsSync(LOCAL_WATERMARK_PATH)) {
+            const buf = await promises_1.default.readFile(LOCAL_WATERMARK_PATH);
+            cachedWatermarkBase64 = buf.toString("base64");
+            return cachedWatermarkBase64;
+        }
     }
-    // 2. Fallback: fetch from remote URL and cache locally
+    catch { }
+    // 3. Fallback: fetch from remote URL
     try {
         const res = await fetch(WATERMARK_URL);
         const arrayBuf = await res.arrayBuffer();
@@ -45,10 +61,6 @@ async function getWatermarkBase64() {
             await promises_1.default.writeFile(LOCAL_WATERMARK_PATH, buf);
         }
         catch { }
-        const meta = await (0, sharp_1.default)(buf).metadata();
-        if (meta.width && meta.height) {
-            cachedWatermarkAspect = meta.width / meta.height;
-        }
         cachedWatermarkBase64 = buf.toString("base64");
         return cachedWatermarkBase64;
     }
@@ -60,8 +72,14 @@ async function getWatermarkBase64() {
 /**
  * Applies a diagonal watermark (from top-left to bottom-right with 0.4 opacity)
  * onto a base64 image and saves it to disk at maximum speed.
+ * If Sharp is not available on the server, safely falls back to saveBase64Image.
  */
 async function applyWatermarkAndSave(req, base64, folder) {
+    const sharp = getSharp();
+    if (!sharp) {
+        // Graceful fallback: save without watermark if sharp binary is not available on production
+        return (0, handleImages_1.saveBase64Image)(req, base64, folder);
+    }
     // Fast base64 parsing without regex backtracking
     let mimeType = "image/jpeg";
     let ext = "jpg";
@@ -82,7 +100,7 @@ async function applyWatermarkAndSave(req, base64, folder) {
     const inputBuffer = Buffer.from(base64Data, "base64");
     const wmBase64 = await getWatermarkBase64();
     // Load into Sharp and retrieve dimensions
-    const image = (0, sharp_1.default)(inputBuffer);
+    const image = sharp(inputBuffer);
     const metadata = await image.metadata();
     const width = metadata.width || 1200;
     const height = metadata.height || 800;

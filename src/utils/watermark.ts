@@ -3,13 +3,26 @@ import fs from "fs/promises";
 import fsSync from "fs";
 import { Request } from "express";
 import { v4 as uuidv4 } from "uuid";
-import sharp from "sharp";
+import { saveBase64Image } from "./handleImages";
 
 const WATERMARK_URL = "https://certificatebcknd.correctsolution.net/uploads/1.png";
 const LOCAL_WATERMARK_PATH = path.join(__dirname, "../assets/watermark.png");
+const UPLOADS_WATERMARK_PATH = path.join(__dirname, "../../uploads/1.png");
 
 let cachedWatermarkBase64: string | null = null;
 let cachedWatermarkAspect: number = 927 / 269;
+
+/**
+ * Safely load Sharp without crashing the server if sharp is not installed on the host.
+ */
+function getSharp(): any {
+  try {
+    return require("sharp");
+  } catch (err) {
+    console.warn("Sharp is not installed or failed to load. Falling back to normal image saving.");
+    return null;
+  }
+}
 
 /**
  * Retrieves the watermark image base64, cached in memory to avoid repeated I/O or network requests.
@@ -19,22 +32,25 @@ async function getWatermarkBase64(): Promise<string> {
     return cachedWatermarkBase64;
   }
 
-  // 1. Try reading from local assets
+  // 1. Try reading from uploads/1.png if it exists on server
   try {
-    if (fsSync.existsSync(LOCAL_WATERMARK_PATH)) {
-      const buf = await fs.readFile(LOCAL_WATERMARK_PATH);
-      const meta = await sharp(buf).metadata();
-      if (meta.width && meta.height) {
-        cachedWatermarkAspect = meta.width / meta.height;
-      }
+    if (fsSync.existsSync(UPLOADS_WATERMARK_PATH)) {
+      const buf = await fs.readFile(UPLOADS_WATERMARK_PATH);
       cachedWatermarkBase64 = buf.toString("base64");
       return cachedWatermarkBase64;
     }
-  } catch (err) {
-    console.warn("Could not read local watermark asset, falling back to network fetch:", err);
-  }
+  } catch {}
 
-  // 2. Fallback: fetch from remote URL and cache locally
+  // 2. Try reading from local assets
+  try {
+    if (fsSync.existsSync(LOCAL_WATERMARK_PATH)) {
+      const buf = await fs.readFile(LOCAL_WATERMARK_PATH);
+      cachedWatermarkBase64 = buf.toString("base64");
+      return cachedWatermarkBase64;
+    }
+  } catch {}
+
+  // 3. Fallback: fetch from remote URL
   try {
     const res = await fetch(WATERMARK_URL);
     const arrayBuf = await res.arrayBuffer();
@@ -45,10 +61,6 @@ async function getWatermarkBase64(): Promise<string> {
       await fs.writeFile(LOCAL_WATERMARK_PATH, buf);
     } catch {}
 
-    const meta = await sharp(buf).metadata();
-    if (meta.width && meta.height) {
-      cachedWatermarkAspect = meta.width / meta.height;
-    }
     cachedWatermarkBase64 = buf.toString("base64");
     return cachedWatermarkBase64;
   } catch (fetchErr) {
@@ -60,12 +72,19 @@ async function getWatermarkBase64(): Promise<string> {
 /**
  * Applies a diagonal watermark (from top-left to bottom-right with 0.4 opacity)
  * onto a base64 image and saves it to disk at maximum speed.
+ * If Sharp is not available on the server, safely falls back to saveBase64Image.
  */
 export async function applyWatermarkAndSave(
   req: Request,
   base64: string,
   folder: string
 ): Promise<{ url: string; relativePath: string }> {
+  const sharp = getSharp();
+  if (!sharp) {
+    // Graceful fallback: save without watermark if sharp binary is not available on production
+    return saveBase64Image(req, base64, folder);
+  }
+
   // Fast base64 parsing without regex backtracking
   let mimeType = "image/jpeg";
   let ext = "jpg";
