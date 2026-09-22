@@ -10,6 +10,7 @@ const drizzle_orm_1 = require("drizzle-orm");
 const response_1 = require("../../utils/response");
 const NotFound_1 = require("../../Errors/NotFound");
 const handleImages_1 = require("../../utils/handleImages");
+const watermark_1 = require("../../utils/watermark");
 const deleteImage_1 = require("../../utils/deleteImage");
 const zod_1 = require("zod");
 const qrcode_1 = __importDefault(require("qrcode"));
@@ -45,14 +46,12 @@ const createCertificate = async (req, res, next) => {
         const qrText = `${frontUrl}/certificate/${id}`;
         // Generate QR Code as base64
         const qrBase64 = await qrcode_1.default.toDataURL(qrText);
-        // Save QR Image
-        const qrSaved = await (0, handleImages_1.saveBase64Image)(req, qrBase64, "certificates/qrs");
-        // Save Images
-        const savedImagesPaths = [];
-        for (const imgBase64 of images) {
-            const savedImg = await (0, handleImages_1.saveBase64Image)(req, imgBase64, "certificates/images");
-            savedImagesPaths.push(savedImg.relativePath); // Save relative path
-        }
+        // Save QR and watermarked images in parallel for maximum speed
+        const [qrSaved, savedImages] = await Promise.all([
+            (0, handleImages_1.saveBase64Image)(req, qrBase64, "certificates/qrs"),
+            Promise.all(images.map((imgBase64) => (0, watermark_1.applyWatermarkAndSave)(req, imgBase64, "certificates/images")))
+        ]);
+        const savedImagesPaths = savedImages.map(img => img.relativePath);
         // Insert into DB
         const newDate = new Date(date);
         await db_1.db.insert(schema_1.certificate).values({
@@ -169,22 +168,13 @@ const updateCertificate = async (req, res, next) => {
         if (date)
             updateData.date = new Date(date);
         if (images && images.length > 0) {
-            // First delete old images
+            // First delete old images in parallel
             if (existingRecord.images && Array.isArray(existingRecord.images)) {
-                for (const imgPath of existingRecord.images) {
-                    try {
-                        await (0, deleteImage_1.deletePhotoFromServer)(imgPath);
-                    }
-                    catch (e) { }
-                }
+                await Promise.all(existingRecord.images.map((imgPath) => (0, deleteImage_1.deletePhotoFromServer)(imgPath).catch(() => { })));
             }
-            // Save new ones
-            const savedImagesPaths = [];
-            for (const imgBase64 of images) {
-                const savedImg = await (0, handleImages_1.saveBase64Image)(req, imgBase64, "certificates/images");
-                savedImagesPaths.push(savedImg.relativePath);
-            }
-            updateData.images = savedImagesPaths;
+            // Save new watermarked images in parallel for maximum speed
+            const savedImages = await Promise.all(images.map((imgBase64) => (0, watermark_1.applyWatermarkAndSave)(req, imgBase64, "certificates/images")));
+            updateData.images = savedImages.map((img) => img.relativePath);
         }
         if (Object.keys(updateData).length > 0) {
             await db_1.db.update(schema_1.certificate).set(updateData).where((0, drizzle_orm_1.eq)(schema_1.certificate.id, id));

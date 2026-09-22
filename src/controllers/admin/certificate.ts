@@ -6,6 +6,7 @@ import { SuccessResponse } from "../../utils/response";
 import { NotFound } from "../../Errors/NotFound";
 import { BadRequest } from "../../Errors/BadRequest";
 import { saveBase64Image } from "../../utils/handleImages";
+import { applyWatermarkAndSave } from "../../utils/watermark";
 import { deletePhotoFromServer } from "../../utils/deleteImage";
 import { z } from "zod";
 import QRCode from "qrcode";
@@ -49,15 +50,13 @@ export const createCertificate = async (req: Request, res: Response, next: NextF
     // Generate QR Code as base64
     const qrBase64 = await QRCode.toDataURL(qrText);
     
-    // Save QR Image
-    const qrSaved = await saveBase64Image(req, qrBase64, "certificates/qrs");
+    // Save QR and watermarked images in parallel for maximum speed
+    const [qrSaved, savedImages] = await Promise.all([
+      saveBase64Image(req, qrBase64, "certificates/qrs"),
+      Promise.all(images.map((imgBase64: string) => applyWatermarkAndSave(req, imgBase64, "certificates/images")))
+    ]);
 
-    // Save Images
-    const savedImagesPaths: string[] = [];
-    for (const imgBase64 of images) {
-      const savedImg = await saveBase64Image(req, imgBase64, "certificates/images");
-      savedImagesPaths.push(savedImg.relativePath); // Save relative path
-    }
+    const savedImagesPaths = savedImages.map(img => img.relativePath);
 
     // Insert into DB
     const newDate = new Date(date);
@@ -189,22 +188,22 @@ export const updateCertificate = async (req: Request, res: Response, next: NextF
     if (date) updateData.date = new Date(date);
     
     if (images && images.length > 0) {
-      // First delete old images
+      // First delete old images in parallel
       if (existingRecord.images && Array.isArray(existingRecord.images)) {
-        for (const imgPath of existingRecord.images) {
-          try {
-             await deletePhotoFromServer(imgPath);
-          } catch(e) {}
-        }
+        await Promise.all(
+          existingRecord.images.map((imgPath: string) =>
+            deletePhotoFromServer(imgPath).catch(() => {})
+          )
+        );
       }
 
-      // Save new ones
-      const savedImagesPaths: string[] = [];
-      for (const imgBase64 of images) {
-        const savedImg = await saveBase64Image(req, imgBase64, "certificates/images");
-        savedImagesPaths.push(savedImg.relativePath);
-      }
-      updateData.images = savedImagesPaths;
+      // Save new watermarked images in parallel for maximum speed
+      const savedImages = await Promise.all(
+        images.map((imgBase64: string) =>
+          applyWatermarkAndSave(req, imgBase64, "certificates/images")
+        )
+      );
+      updateData.images = savedImages.map((img) => img.relativePath);
     }
 
     if (Object.keys(updateData).length > 0) {
