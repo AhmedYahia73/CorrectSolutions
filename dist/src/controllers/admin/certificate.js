@@ -3,12 +3,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteCertificate = exports.updateCertificate = exports.getCertificateById = exports.getAllCertificates = exports.createCertificate = exports.updateCertificateSchema = exports.createCertificateSchema = void 0;
+exports.deleteCertificate = exports.updateCertificate = exports.getCertificateById = exports.getAllCertificates = exports.createCertificate = exports.uploadCertificateImages = exports.updateCertificateSchema = exports.createCertificateSchema = void 0;
 const db_1 = require("../../models/db");
 const schema_1 = require("../../models/schema");
 const drizzle_orm_1 = require("drizzle-orm");
 const response_1 = require("../../utils/response");
 const NotFound_1 = require("../../Errors/NotFound");
+const BadRequest_1 = require("../../Errors/BadRequest");
 const handleImages_1 = require("../../utils/handleImages");
 const watermark_1 = require("../../utils/watermark");
 const deleteImage_1 = require("../../utils/deleteImage");
@@ -34,9 +35,40 @@ exports.updateCertificateSchema = zod_1.z.object({
         images: zod_1.z.array(zod_1.z.string()).optional()
     })
 });
+// Helper to determine if an image string is raw base64 or already an uploaded path
+function isBase64Image(str) {
+    return str.startsWith("data:image/") || str.length > 500;
+}
+// Clean url/path to relative path 'uploads/...'
+function cleanRelativePath(str) {
+    const uploadsIndex = str.indexOf("uploads/");
+    return uploadsIndex !== -1 ? str.slice(uploadsIndex) : str;
+}
 // ==========================================
 // 🚀 Controllers
 // ==========================================
+// Upload Images in Batches (Multipart)
+const uploadCertificateImages = async (req, res, next) => {
+    try {
+        const files = req.files;
+        if (!files || files.length === 0) {
+            throw new BadRequest_1.BadRequest("No images uploaded");
+        }
+        // Process files in controlled batches of 3-4 to keep memory and CPU low
+        const savedResults = await (0, watermark_1.processInBatches)(files, 4, async (file) => {
+            return (0, watermark_1.applyWatermarkBufferAndSave)(req, file.buffer, file.mimetype, "certificates/images");
+        });
+        return (0, response_1.SuccessResponse)(res, {
+            message: "Images uploaded and watermarked successfully",
+            paths: savedResults.map(r => r.relativePath),
+            urls: savedResults.map(r => r.url)
+        }, 200);
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.uploadCertificateImages = uploadCertificateImages;
 // Create
 const createCertificate = async (req, res, next) => {
     try {
@@ -46,12 +78,28 @@ const createCertificate = async (req, res, next) => {
         const qrText = `${frontUrl}/certificate/${id}`;
         // Generate QR Code as base64
         const qrBase64 = await qrcode_1.default.toDataURL(qrText);
-        // Save QR and watermarked images in parallel for maximum speed
-        const [qrSaved, savedImages] = await Promise.all([
-            (0, handleImages_1.saveBase64Image)(req, qrBase64, "certificates/qrs"),
-            Promise.all(images.map((imgBase64) => (0, watermark_1.applyWatermarkAndSave)(req, imgBase64, "certificates/images")))
-        ]);
-        const savedImagesPaths = savedImages.map(img => img.relativePath);
+        const qrSaved = await (0, handleImages_1.saveBase64Image)(req, qrBase64, "certificates/qrs");
+        // Process images: support both already-uploaded relative paths and base64 strings
+        const savedImagesPaths = new Array(images.length);
+        const base64Items = [];
+        images.forEach((img, idx) => {
+            if (isBase64Image(img)) {
+                base64Items.push({ index: idx, base64: img });
+            }
+            else {
+                savedImagesPaths[idx] = cleanRelativePath(img);
+            }
+        });
+        // If any base64 images were provided, process them in controlled batches
+        if (base64Items.length > 0) {
+            const processed = await (0, watermark_1.processInBatches)(base64Items, 4, async (item) => {
+                const saved = await (0, watermark_1.applyWatermarkAndSave)(req, item.base64, "certificates/images");
+                return { index: item.index, relativePath: saved.relativePath };
+            });
+            for (const resItem of processed) {
+                savedImagesPaths[resItem.index] = resItem.relativePath;
+            }
+        }
         // Insert into DB
         const newDate = new Date(date);
         await db_1.db.insert(schema_1.certificate).values({
@@ -168,13 +216,45 @@ const updateCertificate = async (req, res, next) => {
         if (date)
             updateData.date = new Date(date);
         if (images && images.length > 0) {
-            // First delete old images in parallel
-            if (existingRecord.images && Array.isArray(existingRecord.images)) {
-                await Promise.all(existingRecord.images.map((imgPath) => (0, deleteImage_1.deletePhotoFromServer)(imgPath).catch(() => { })));
+            // Process images: support already-uploaded relative paths and base64 strings
+            const finalImagesPaths = new Array(images.length);
+            const base64Items = [];
+            images.forEach((img, idx) => {
+                if (isBase64Image(img)) {
+                    base64Items.push({ index: idx, base64: img });
+                }
+                else {
+                    finalImagesPaths[idx] = cleanRelativePath(img);
+                }
+            });
+            if (base64Items.length > 0) {
+                const processed = await (0, watermark_1.processInBatches)(base64Items, 4, async (item) => {
+                    const saved = await (0, watermark_1.applyWatermarkAndSave)(req, item.base64, "certificates/images");
+                    return { index: item.index, relativePath: saved.relativePath };
+                });
+                for (const resItem of processed) {
+                    finalImagesPaths[resItem.index] = resItem.relativePath;
+                }
             }
-            // Save new watermarked images in parallel for maximum speed
-            const savedImages = await Promise.all(images.map((imgBase64) => (0, watermark_1.applyWatermarkAndSave)(req, imgBase64, "certificates/images")));
-            updateData.images = savedImages.map((img) => img.relativePath);
+            // Determine which old images were actually removed, and delete only those
+            let oldImages = [];
+            if (Array.isArray(existingRecord.images)) {
+                oldImages = existingRecord.images;
+            }
+            else if (typeof existingRecord.images === "string") {
+                try {
+                    oldImages = JSON.parse(existingRecord.images);
+                }
+                catch (e) {
+                    oldImages = [];
+                }
+            }
+            const newPathsSet = new Set(finalImagesPaths);
+            const removedImages = oldImages.filter((oldImg) => !newPathsSet.has(oldImg));
+            if (removedImages.length > 0) {
+                await Promise.all(removedImages.map((imgPath) => (0, deleteImage_1.deletePhotoFromServer)(imgPath).catch(() => { })));
+            }
+            updateData.images = finalImagesPaths;
         }
         if (Object.keys(updateData).length > 0) {
             await db_1.db.update(schema_1.certificate).set(updateData).where((0, drizzle_orm_1.eq)(schema_1.certificate.id, id));

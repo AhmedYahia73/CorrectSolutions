@@ -3,12 +3,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.processInBatches = processInBatches;
+exports.applyWatermarkBufferAndSave = applyWatermarkBufferAndSave;
 exports.applyWatermarkAndSave = applyWatermarkAndSave;
 const path_1 = __importDefault(require("path"));
 const promises_1 = __importDefault(require("fs/promises"));
 const fs_1 = __importDefault(require("fs"));
 const uuid_1 = require("uuid");
-const handleImages_1 = require("./handleImages");
 const LOCAL_WATERMARK_PATHS = [
     path_1.default.join(__dirname, "../assets/watermark.png"),
     path_1.default.join(process.cwd(), "dist/src/assets/watermark.png"),
@@ -83,29 +84,26 @@ async function getWatermarkBuffer() {
     }
 }
 /**
- * Applies a diagonal watermark (from top-left to bottom-right with 0.4 opacity)
- * onto a base64 image and saves it to disk.
- * Uses Sharp if available; otherwise uses bundled standalone pure-JS processor.
+ * Processes an array of items in controlled concurrent batches to prevent memory spikes.
  */
-async function applyWatermarkAndSave(req, base64, folder) {
-    // Fast base64 parsing without regex backtracking
-    let mimeType = "image/jpeg";
-    let ext = "jpg";
-    let base64Data = base64;
-    const commaIdx = base64.indexOf(",");
-    if (commaIdx !== -1) {
-        const header = base64.slice(0, commaIdx);
-        base64Data = base64.slice(commaIdx + 1);
-        const match = header.match(/data:([^;]+)/);
-        if (match) {
-            mimeType = match[1];
-            const parsedExt = mimeType.split("/")[1]?.replace(/[^a-zA-Z0-9]/g, "");
-            if (parsedExt) {
-                ext = parsedExt === "jpeg" ? "jpg" : parsedExt;
-            }
-        }
+async function processInBatches(items, batchSize, worker) {
+    const results = [];
+    for (let i = 0; i < items.length; i += batchSize) {
+        const chunk = items.slice(i, i + batchSize);
+        const chunkResults = await Promise.all(chunk.map((item, idx) => worker(item, i + idx)));
+        results.push(...chunkResults);
     }
-    const inputBuffer = Buffer.from(base64Data, "base64");
+    return results;
+}
+/**
+ * Applies watermark directly to a Buffer (e.g., from Multer) and saves to disk.
+ */
+async function applyWatermarkBufferAndSave(req, inputBuffer, mimeType = "image/jpeg", folder) {
+    let ext = "jpg";
+    const parsedExt = mimeType.split("/")[1]?.replace(/[^a-zA-Z0-9]/g, "");
+    if (parsedExt) {
+        ext = parsedExt === "jpeg" ? "jpg" : parsedExt;
+    }
     const uploadsDir = path_1.default.join(process.cwd(), "uploads", folder);
     await promises_1.default.mkdir(uploadsDir, { recursive: true });
     const fileName = `${(0, uuid_1.v4)()}.${ext}`;
@@ -171,6 +169,27 @@ async function applyWatermarkAndSave(req, base64, folder) {
             console.warn("Bundled watermarking failed, falling back to raw save:", bundleErr);
         }
     }
-    // Last-resort fallback: Save raw image
-    return (0, handleImages_1.saveBase64Image)(req, base64, folder);
+    // Last-resort fallback: Save raw buffer
+    await promises_1.default.writeFile(filePath, inputBuffer);
+    const relativePath = `uploads/${folder}/${fileName}`;
+    const imageUrl = `${req.protocol}://${req.get("host")}/${relativePath}`;
+    return { url: imageUrl, relativePath };
+}
+/**
+ * Applies a diagonal watermark onto a base64 image and saves it to disk.
+ */
+async function applyWatermarkAndSave(req, base64, folder) {
+    let mimeType = "image/jpeg";
+    let base64Data = base64;
+    const commaIdx = base64.indexOf(",");
+    if (commaIdx !== -1) {
+        const header = base64.slice(0, commaIdx);
+        base64Data = base64.slice(commaIdx + 1);
+        const match = header.match(/data:([^;]+)/);
+        if (match) {
+            mimeType = match[1];
+        }
+    }
+    const inputBuffer = Buffer.from(base64Data, "base64");
+    return applyWatermarkBufferAndSave(req, inputBuffer, mimeType, folder);
 }

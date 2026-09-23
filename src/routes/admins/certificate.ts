@@ -5,14 +5,23 @@ import {
   getCertificateById,
   updateCertificate,
   deleteCertificate,
+  uploadCertificateImages,
   createCertificateSchema,
   updateCertificateSchema
 } from "../../controllers/admin/certificate";
 import { catchAsync } from "../../utils/catchAsync";
 import { validate } from "../../middlewares/validation";
 import { checkOnlyAdmin } from "../../middlewares/checkpermission";
+import { uploadCertificateImagesMiddleware } from "../../middlewares/uploadMiddleware";
 
 const router = Router();
+
+router.post(
+  "/upload-images",
+  checkOnlyAdmin(),
+  uploadCertificateImagesMiddleware,
+  catchAsync(uploadCertificateImages)
+);
 
 router.post(
   "/",

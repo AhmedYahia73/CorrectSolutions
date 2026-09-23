@@ -83,35 +83,39 @@ async function getWatermarkBuffer(): Promise<Buffer> {
 }
 
 /**
- * Applies a diagonal watermark (from top-left to bottom-right with 0.4 opacity)
- * onto a base64 image and saves it to disk.
- * Uses Sharp if available; otherwise uses bundled standalone pure-JS processor.
+ * Processes an array of items in controlled concurrent batches to prevent memory spikes.
  */
-export async function applyWatermarkAndSave(
+export async function processInBatches<T, R>(
+  items: T[],
+  batchSize: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const chunk = items.slice(i, i + batchSize);
+    const chunkResults = await Promise.all(
+      chunk.map((item, idx) => worker(item, i + idx))
+    );
+    results.push(...chunkResults);
+  }
+  return results;
+}
+
+/**
+ * Applies watermark directly to a Buffer (e.g., from Multer) and saves to disk.
+ */
+export async function applyWatermarkBufferAndSave(
   req: Request,
-  base64: string,
+  inputBuffer: Buffer,
+  mimeType: string = "image/jpeg",
   folder: string
 ): Promise<{ url: string; relativePath: string }> {
-  // Fast base64 parsing without regex backtracking
-  let mimeType = "image/jpeg";
   let ext = "jpg";
-  let base64Data = base64;
-
-  const commaIdx = base64.indexOf(",");
-  if (commaIdx !== -1) {
-    const header = base64.slice(0, commaIdx);
-    base64Data = base64.slice(commaIdx + 1);
-    const match = header.match(/data:([^;]+)/);
-    if (match) {
-      mimeType = match[1];
-      const parsedExt = mimeType.split("/")[1]?.replace(/[^a-zA-Z0-9]/g, "");
-      if (parsedExt) {
-        ext = parsedExt === "jpeg" ? "jpg" : parsedExt;
-      }
-    }
+  const parsedExt = mimeType.split("/")[1]?.replace(/[^a-zA-Z0-9]/g, "");
+  if (parsedExt) {
+    ext = parsedExt === "jpeg" ? "jpg" : parsedExt;
   }
 
-  const inputBuffer = Buffer.from(base64Data, "base64");
   const uploadsDir = path.join(process.cwd(), "uploads", folder);
   await fs.mkdir(uploadsDir, { recursive: true });
 
@@ -185,6 +189,35 @@ export async function applyWatermarkAndSave(
     }
   }
 
-  // Last-resort fallback: Save raw image
-  return saveBase64Image(req, base64, folder);
+  // Last-resort fallback: Save raw buffer
+  await fs.writeFile(filePath, inputBuffer);
+  const relativePath = `uploads/${folder}/${fileName}`;
+  const imageUrl = `${req.protocol}://${req.get("host")}/${relativePath}`;
+  return { url: imageUrl, relativePath };
 }
+
+/**
+ * Applies a diagonal watermark onto a base64 image and saves it to disk.
+ */
+export async function applyWatermarkAndSave(
+  req: Request,
+  base64: string,
+  folder: string
+): Promise<{ url: string; relativePath: string }> {
+  let mimeType = "image/jpeg";
+  let base64Data = base64;
+
+  const commaIdx = base64.indexOf(",");
+  if (commaIdx !== -1) {
+    const header = base64.slice(0, commaIdx);
+    base64Data = base64.slice(commaIdx + 1);
+    const match = header.match(/data:([^;]+)/);
+    if (match) {
+      mimeType = match[1];
+    }
+  }
+
+  const inputBuffer = Buffer.from(base64Data, "base64");
+  return applyWatermarkBufferAndSave(req, inputBuffer, mimeType, folder);
+}
+

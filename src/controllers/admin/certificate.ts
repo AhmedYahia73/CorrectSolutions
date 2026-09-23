@@ -6,7 +6,7 @@ import { SuccessResponse } from "../../utils/response";
 import { NotFound } from "../../Errors/NotFound";
 import { BadRequest } from "../../Errors/BadRequest";
 import { saveBase64Image } from "../../utils/handleImages";
-import { applyWatermarkAndSave } from "../../utils/watermark";
+import { applyWatermarkAndSave, applyWatermarkBufferAndSave, processInBatches } from "../../utils/watermark";
 import { deletePhotoFromServer } from "../../utils/deleteImage";
 import { z } from "zod";
 import QRCode from "qrcode";
@@ -34,9 +34,48 @@ export const updateCertificateSchema = z.object({
   })
 });
 
+// Helper to determine if an image string is raw base64 or already an uploaded path
+function isBase64Image(str: string): boolean {
+  return str.startsWith("data:image/") || str.length > 500;
+}
+
+// Clean url/path to relative path 'uploads/...'
+function cleanRelativePath(str: string): string {
+  const uploadsIndex = str.indexOf("uploads/");
+  return uploadsIndex !== -1 ? str.slice(uploadsIndex) : str;
+}
+
 // ==========================================
 // 🚀 Controllers
 // ==========================================
+
+// Upload Images in Batches (Multipart)
+export const uploadCertificateImages = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const files = req.files as Express.Multer.File[];
+    if (!files || files.length === 0) {
+      throw new BadRequest("No images uploaded");
+    }
+
+    // Process files in controlled batches of 3-4 to keep memory and CPU low
+    const savedResults = await processInBatches(files, 4, async (file) => {
+      return applyWatermarkBufferAndSave(
+        req,
+        file.buffer,
+        file.mimetype,
+        "certificates/images"
+      );
+    });
+
+    return SuccessResponse(res, {
+      message: "Images uploaded and watermarked successfully",
+      paths: savedResults.map(r => r.relativePath),
+      urls: savedResults.map(r => r.url)
+    }, 200);
+  } catch (error) {
+    next(error);
+  }
+};
 
 // Create
 export const createCertificate = async (req: Request, res: Response, next: NextFunction) => {
@@ -49,14 +88,30 @@ export const createCertificate = async (req: Request, res: Response, next: NextF
     
     // Generate QR Code as base64
     const qrBase64 = await QRCode.toDataURL(qrText);
-    
-    // Save QR and watermarked images in parallel for maximum speed
-    const [qrSaved, savedImages] = await Promise.all([
-      saveBase64Image(req, qrBase64, "certificates/qrs"),
-      Promise.all(images.map((imgBase64: string) => applyWatermarkAndSave(req, imgBase64, "certificates/images")))
-    ]);
+    const qrSaved = await saveBase64Image(req, qrBase64, "certificates/qrs");
 
-    const savedImagesPaths = savedImages.map(img => img.relativePath);
+    // Process images: support both already-uploaded relative paths and base64 strings
+    const savedImagesPaths: string[] = new Array(images.length);
+    const base64Items: { index: number; base64: string }[] = [];
+
+    images.forEach((img: string, idx: number) => {
+      if (isBase64Image(img)) {
+        base64Items.push({ index: idx, base64: img });
+      } else {
+        savedImagesPaths[idx] = cleanRelativePath(img);
+      }
+    });
+
+    // If any base64 images were provided, process them in controlled batches
+    if (base64Items.length > 0) {
+      const processed = await processInBatches(base64Items, 4, async (item) => {
+        const saved = await applyWatermarkAndSave(req, item.base64, "certificates/images");
+        return { index: item.index, relativePath: saved.relativePath };
+      });
+      for (const resItem of processed) {
+        savedImagesPaths[resItem.index] = resItem.relativePath;
+      }
+    }
 
     // Insert into DB
     const newDate = new Date(date);
@@ -188,22 +243,52 @@ export const updateCertificate = async (req: Request, res: Response, next: NextF
     if (date) updateData.date = new Date(date);
     
     if (images && images.length > 0) {
-      // First delete old images in parallel
-      if (existingRecord.images && Array.isArray(existingRecord.images)) {
+      // Process images: support already-uploaded relative paths and base64 strings
+      const finalImagesPaths: string[] = new Array(images.length);
+      const base64Items: { index: number; base64: string }[] = [];
+
+      images.forEach((img: string, idx: number) => {
+        if (isBase64Image(img)) {
+          base64Items.push({ index: idx, base64: img });
+        } else {
+          finalImagesPaths[idx] = cleanRelativePath(img);
+        }
+      });
+
+      if (base64Items.length > 0) {
+        const processed = await processInBatches(base64Items, 4, async (item) => {
+          const saved = await applyWatermarkAndSave(req, item.base64, "certificates/images");
+          return { index: item.index, relativePath: saved.relativePath };
+        });
+        for (const resItem of processed) {
+          finalImagesPaths[resItem.index] = resItem.relativePath;
+        }
+      }
+
+      // Determine which old images were actually removed, and delete only those
+      let oldImages: string[] = [];
+      if (Array.isArray(existingRecord.images)) {
+        oldImages = existingRecord.images;
+      } else if (typeof existingRecord.images === "string") {
+        try {
+          oldImages = JSON.parse(existingRecord.images);
+        } catch (e) {
+          oldImages = [];
+        }
+      }
+
+      const newPathsSet = new Set(finalImagesPaths);
+      const removedImages = oldImages.filter((oldImg) => !newPathsSet.has(oldImg));
+      
+      if (removedImages.length > 0) {
         await Promise.all(
-          existingRecord.images.map((imgPath: string) =>
+          removedImages.map((imgPath: string) =>
             deletePhotoFromServer(imgPath).catch(() => {})
           )
         );
       }
 
-      // Save new watermarked images in parallel for maximum speed
-      const savedImages = await Promise.all(
-        images.map((imgBase64: string) =>
-          applyWatermarkAndSave(req, imgBase64, "certificates/images")
-        )
-      );
-      updateData.images = savedImages.map((img) => img.relativePath);
+      updateData.images = finalImagesPaths;
     }
 
     if (Object.keys(updateData).length > 0) {
